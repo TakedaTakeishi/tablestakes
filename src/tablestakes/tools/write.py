@@ -402,3 +402,47 @@ def create_table(
     _atomic_write(path, bom + new_file)
 
     return f"v:{compute_hash(raw)}"
+
+
+@mcp.tool(output_schema=None)
+def move_row(
+    file_path: str,
+    table_index: Annotated[int, Field(ge=0)],
+    version: str,
+    from_index: Annotated[int, Field(ge=0)],
+    to_index: Annotated[int, Field(ge=-1)],
+) -> str:
+    """Move a row to a new position (reorder). Requires version hash from read_table.
+
+    The row is removed from from_index and inserted at to_index in the
+    remaining list — so to_index is interpreted AFTER removal.
+    Use to_index = -1 to move the row to the end.
+
+    On success returns ONLY `v:{new_hash}`.
+    On error returns JSON with "error" and "message" fields.
+
+    Args:
+        file_path: Absolute path to the Markdown file.
+        table_index: 0-based table index from list_tables.
+        version: 12-char hex hash from read_table (after "v:").
+        from_index: 0-based data row index to move.
+        to_index: Target position after removal, or -1 to append at the end.
+    """
+
+    def apply(
+        table: RawTable,
+        headers: list[str],
+        rows: list[list[str]],
+        columns: list[ColumnDescriptor],
+    ) -> tuple[list[str], list[list[str]]]:
+        if from_index >= len(rows):
+            msg = f"Row {from_index} out of range (0-{max(0, len(rows) - 1)})"
+            raise ValueError(msg)
+        row = rows.pop(from_index)
+        if to_index == -1 or to_index >= len(rows):
+            rows.append(row)
+        else:
+            rows.insert(to_index, row)
+        return headers, rows
+
+    return _safe_write(file_path, table_index, version, apply)

@@ -20,6 +20,8 @@ mcp = FastMCP(
         'Version hash: extract the 12-char hex after "v:" in output.\n'
         "On STALE_READ: call read_table again for fresh version, retry.\n"
         'Write tools return only "v:{new_hash}" — call read_table to see updated content.\n'
+        'Extra tools: get_cell (single cell read), move_row (reorder), '
+        'validate_tables (cell counts + duplicate keys).\n'
         "create_table(file_path, content) creates a new table. No version needed.\n"
         "Columns: letter (A), name (Priority), or composite (B:Priority).\n"
         "Row indices are 0-based, header row excluded."

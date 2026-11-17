@@ -318,3 +318,141 @@ def search_tables(
     table_count = sum(1 for line in table_parts if line.startswith("T"))
     header = f"{total_matches} match{'es' if total_matches != 1 else ''} in {table_count} table{'s' if table_count != 1 else ''}\n"
     return header + "\n".join(table_parts)
+
+
+# ---------------------------------------------------------------------------
+# get_cell & validate_tables
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool(output_schema=None)
+def get_cell(
+    file_path: str,
+    table_index: Annotated[int, Field(ge=0)],
+    row_index: Annotated[int, Field(ge=0)],
+    column: str,
+) -> str:
+    """Read a single cell value without loading the whole table.
+
+    Cheaper than read_table when rows are very long — returns only the
+    requested cell plus the version hash needed for edits.
+
+    Args:
+        file_path: Absolute path to the Markdown file.
+        table_index: 0-based table index from list_tables.
+        row_index: 0-based data row index (header row is NOT counted).
+        column: Column letter ("A"), name ("Priority"), or composite ("B:Priority").
+    """
+    result = _read_tables(file_path)
+    if isinstance(result, str):
+        return result
+    tables = result
+    if table_index >= len(tables):
+        return _error(
+            "TABLE_NOT_FOUND",
+            f"Index {table_index} out of range. {len(tables)} table(s) in file.",
+        )
+
+    table = tables[table_index]
+    headers, rows = _parse_table_data(table)
+    if not headers:
+        return _error("EMPTY_TABLE", "Table has no parseable headers.")
+    if row_index >= len(rows):
+        return _error(
+            "ROW_NOT_FOUND",
+            f"Row {row_index} out of range (0-{max(0, len(rows) - 1)}).",
+        )
+
+    columns = [ColumnDescriptor.from_header(i, h) for i, h in enumerate(headers)]
+    try:
+        col_idx = resolve_column(column, columns)
+    except ValueError as e:
+        return _error("COLUMN_NOT_FOUND", str(e))
+
+    version = compute_hash(table.raw_content)
+    value = rows[row_index][col_idx] if col_idx < len(rows[row_index]) else ""
+    sec = f" [{table.section_heading}]" if table.section_heading else ""
+    return f"v:{version} row{row_index} {columns[col_idx].display_name}{sec}\n{value}"
+
+
+@mcp.tool(output_schema=None)
+def validate_tables(
+    file_path: str,
+    table_index: Annotated[int, Field(ge=-1)] = -1,
+    key_column: str = "A",
+) -> str:
+    """Check structural integrity of tables: cell counts and duplicate keys.
+
+    Two checks per table:
+    - Every data row has the same number of cells as the header row.
+    - No duplicate non-empty values in the key column (default first column).
+
+    Args:
+        file_path: Absolute path to the Markdown file.
+        table_index: Validate one table (0-based), or -1 for all tables.
+        key_column: Column to scan for duplicates (letter, name, or composite).
+    """
+    result = _read_tables(file_path)
+    if isinstance(result, str):
+        return result
+    tables = result
+
+    if table_index >= 0:
+        if table_index >= len(tables):
+            return _error(
+                "TABLE_NOT_FOUND",
+                f"Index {table_index} out of range. {len(tables)} table(s) in file.",
+            )
+        targets = [tables[table_index]]
+    else:
+        targets = tables
+
+    lines: list[str] = []
+    total_issues = 0
+
+    for table in targets:
+        headers, rows = _parse_table_data(table)
+        if not headers:
+            continue
+        columns = [ColumnDescriptor.from_header(i, h) for i, h in enumerate(headers)]
+
+        issues: list[str] = []
+
+        # 1) cell-count mismatches
+        for row_idx, row in enumerate(rows):
+            if len(row) != len(headers):
+                issues.append(
+                    f"  row{row_idx}: {len(row)} cells (expected {len(headers)})"
+                )
+
+        # 2) duplicate keys
+        try:
+            kidx = resolve_column(key_column, columns)
+        except ValueError:
+            kidx = 0
+        seen: dict[str, int] = {}
+        for row_idx, row in enumerate(rows):
+            key = row[kidx].strip() if kidx < len(row) else ""
+            if not key:
+                continue
+            if key in seen:
+                preview = key[:60]
+                issues.append(
+                    f"  duplicate {columns[kidx].display_name} '{preview}' "
+                    f"in row{row_idx} (first seen row{seen[key]})"
+                )
+            else:
+                seen[key] = row_idx
+
+        sec = f" [{table.section_heading}]" if table.section_heading else ""
+        if issues:
+            total_issues += len(issues)
+            version = compute_hash(table.raw_content)
+            lines.append(f"T{table.index} v:{version}{sec} — {len(issues)} issue(s)")
+            lines.extend(issues)
+            lines.append("")
+
+    if total_issues == 0:
+        return f"OK — {len(targets)} table(s) validated, no issues."
+    header = f"{total_issues} issue(s) in {len(lines) // 3 or 1} table(s)\n"
+    return header + "\n".join(lines)
