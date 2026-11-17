@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- `get_cell(file, table, row, column)`: read a single cell value + version
+  hash without loading the whole table.
+- `move_row(file, table, version, from, to)`: reorder rows through the
+  `_safe_write` safety model (STALE_READ on stale hash).
+- `validate_tables(file, table=-1, key_column='A')`: structural lint —
+  cell-count mismatches per row and duplicate keys in a key column.
+- Width-preserving writes: when a pipe table is width-aligned (all lines
+  share one length), cell/row edits pad untouched cells to the previous
+  per-column widths so untouched rows stay byte-identical (minimal diffs
+  in human-formatted files). Compact tables stay compact; `replace_table`
+  is exempt (full replacement defines its own shape).
+
+
 ## [1.1.0] - 2026-03-24
 
 ### Added

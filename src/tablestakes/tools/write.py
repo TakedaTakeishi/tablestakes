@@ -16,7 +16,9 @@ from typing import Annotated, Literal, TypeAlias
 from pydantic import Field
 
 from tablestakes.converter import (
+    column_widths,
     html_to_rows,
+    is_width_aligned,
     parse_alignment,
     pipe_table_to_rows,
     resolve_column,
@@ -58,6 +60,7 @@ def _safe_write(
     table_index: int,
     version: str,
     edit_fn: EditFn,
+    preserve_widths: bool = True,
 ) -> str:
     """Core write pattern implementing the shifted-lines safety model.
 
@@ -100,6 +103,16 @@ def _safe_write(
     headers, rows = _parse_table(table)
     original_headers = list(headers)
 
+    # Column widths BEFORE the edit (escaped cells) so untouched rows keep
+    # their padding and diffs stay row-local.  Never truncates.
+    min_widths: list[int] | None = None
+    if (
+        preserve_widths
+        and table.format == TableFormat.PIPE
+        and is_width_aligned(table.raw_content)
+    ):
+        min_widths = column_widths(headers, rows, len(headers))
+
     # Build column descriptors for column resolution
     columns = [ColumnDescriptor.from_header(i, h) for i, h in enumerate(headers)]
 
@@ -110,7 +123,9 @@ def _safe_write(
         return _error("EDIT_ERROR", str(e))
 
     # Serialize back to original format
-    new_raw = _serialize_table(table, new_headers, new_rows, original_headers)
+    new_raw = _serialize_table(
+        table, new_headers, new_rows, original_headers, min_widths=min_widths
+    )
 
     # Replace in file and write atomically (preserve BOM if present)
     new_content = bom + content[: table.start_offset] + new_raw + content[table.end_offset :]
@@ -133,11 +148,12 @@ def _serialize_table(
     headers: list[str],
     rows: list[list[str]],
     original_headers: list[str] | None = None,
+    min_widths: list[int] | None = None,
 ) -> str:
     """Serialize headers + rows back to the table's original format."""
     if table.format == TableFormat.PIPE:
         alignments = parse_alignment(table.raw_content)
-        return rows_to_pipe_table(headers, rows, alignments=alignments)
+        return rows_to_pipe_table(headers, rows, alignments=alignments, min_widths=min_widths)
     return rows_to_html(
         headers,
         rows,
@@ -326,7 +342,7 @@ def replace_table(
             table.raw_content = new_content
         return new_headers, new_rows
 
-    return _safe_write(file_path, table_index, version, apply)
+    return _safe_write(file_path, table_index, version, apply, preserve_widths=False)
 
 
 @mcp.tool(output_schema=None)

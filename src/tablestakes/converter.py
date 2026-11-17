@@ -174,6 +174,7 @@ def rows_to_pipe_table(
     headers: list[str],
     rows: list[list[str]],
     alignments: list[str] | None = None,
+    min_widths: list[int] | None = None,
 ) -> str:
     """Format headers + rows as a compact GFM pipe table string.
 
@@ -187,6 +188,10 @@ def rows_to_pipe_table(
         alignments: Per-column alignment markers (``left``, ``right``,
             ``center``, ``none``).  When *None* or length-mismatched the
             delimiter row uses plain ``---``.
+        min_widths: Per-column minimum widths (escaped-cell character
+            counts).  Cells shorter than the minimum are padded with
+            spaces so edits to width-aligned tables keep untouched rows
+            byte-identical.  Never truncates.
     """
     if not headers:
         return ""
@@ -195,7 +200,14 @@ def rows_to_pipe_table(
     padded_rows = [_pad_row(row, col_count) for row in rows]
 
     escaped_headers = [_escape_pipe_cell(h) for h in headers]
-    header_line = "| " + " | ".join(escaped_headers) + " |"
+
+    def _mw(i: int) -> int:
+        if min_widths and i < len(min_widths):
+            return min_widths[i]
+        return 0
+
+    padded_headers = [c.ljust(_mw(i)) for i, c in enumerate(escaped_headers)]
+    header_line = "| " + " | ".join(padded_headers) + " |"
 
     # Build delimiter row — preserve alignment markers when available
     if alignments and len(alignments) == col_count:
@@ -216,9 +228,44 @@ def rows_to_pipe_table(
     data_lines = []
     for row in padded_rows:
         cells = [_escape_pipe_cell(row[i]) if i < len(row) else "" for i in range(col_count)]
-        data_lines.append("| " + " | ".join(cells) + " |")
+        padded_cells = [c.ljust(_mw(i)) for i, c in enumerate(cells)]
+        data_lines.append("| " + " | ".join(padded_cells) + " |")
 
     return "\n".join([header_line, delim_line, *data_lines])
+
+
+def is_width_aligned(raw_content: str) -> bool:
+    """True when every non-empty line of a pipe table has the same length.
+
+    Width-aligned tables (what human formatters produce) pad every row to
+    the per-column maximum, so all lines share one total length.  Compact
+    or ragged tables do not.  Used to decide whether an edit should
+    preserve column widths: only aligned tables get padding preserved.
+    """
+    lines = [line for line in raw_content.strip().split("\n") if line.strip()]
+    if len(lines) < 2:
+        return False
+    return len({len(line) for line in lines}) == 1
+
+
+def column_widths(
+    headers: list[str],
+    rows: list[list[str]],
+    col_count: int,
+) -> list[int]:
+    """Per-column widths of escaped cells (headers + rows), for width-preserving writes.
+
+    Measures the ESCAPED cell text, matching what ``rows_to_pipe_table``
+    writes when ``min_widths`` is passed.  Never returns less than 1.
+    """
+    widths = [0] * col_count
+    for cells in [headers, *rows]:
+        for i, cell in enumerate(cells):
+            if i < col_count:
+                w = len(_escape_pipe_cell(cell))
+                if w > widths[i]:
+                    widths[i] = w
+    return widths
 
 
 def _pad_row(row: list[str], col_count: int) -> list[str]:

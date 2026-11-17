@@ -234,3 +234,86 @@ class TestValidateTables:
                 )
             )
             assert text.startswith("OK")
+
+
+class TestWidthPreservation:
+    """Edits to width-aligned tables must keep untouched rows byte-identical."""
+
+    @pytest.fixture
+    def padded_md(self, tmp_path: Path) -> Path:
+        f = tmp_path / "padded.md"
+        f.write_text(
+            "# Test\n\n"
+            "| Name  | Age | City |\n"
+            "| ----- | --- | ---- |\n"
+            "| Alice | 30  | NYC  |\n"
+            "| Bob   | 25  | LA   |\n"
+            "\nEnd.\n"
+        )
+        return f
+
+    async def test_update_keeps_untouched_row_identical(self, padded_md: Path) -> None:
+        before = padded_md.read_text().splitlines()
+        async with Client(mcp) as client:
+            v = await read_version(client, str(padded_md))
+            await client.call_tool(
+                "update_cells",
+                {
+                    "file_path": str(padded_md),
+                    "table_index": 0,
+                    "version": v,
+                    "updates": [{"row": 1, "column": "Age", "value": "26"}],
+                },
+            )
+        after = padded_md.read_text().splitlines()
+        assert after[4] == before[4] == "| Alice | 30  | NYC  |"
+        assert after[5] == "| Bob   | 26  | LA   |"
+
+    async def test_move_row_keeps_padding(self, padded_md: Path) -> None:
+        async with Client(mcp) as client:
+            v = await read_version(client, str(padded_md))
+            await client.call_tool(
+                "move_row",
+                {
+                    "file_path": str(padded_md),
+                    "table_index": 0,
+                    "version": v,
+                    "from_index": 0,
+                    "to_index": -1,
+                },
+            )
+        after = padded_md.read_text().splitlines()
+        assert "| Bob   | 25  | LA   |" in after
+        assert "| Alice | 30  | NYC  |" in after
+
+    async def test_compact_table_stays_compact(self, pipe_md: Path) -> None:
+        before = pipe_md.read_text().splitlines()
+        async with Client(mcp) as client:
+            v = await read_version(client, str(pipe_md))
+            await client.call_tool(
+                "update_cells",
+                {
+                    "file_path": str(pipe_md),
+                    "table_index": 0,
+                    "version": v,
+                    "updates": [{"row": 0, "column": "Age", "value": "31"}],
+                },
+            )
+        after = pipe_md.read_text().splitlines()
+        assert after[4] == "| Alice | 31 | NYC |"
+
+    async def test_replace_table_not_forced_old_widths(self, padded_md: Path) -> None:
+        async with Client(mcp) as client:
+            v = await read_version(client, str(padded_md))
+            await client.call_tool(
+                "replace_table",
+                {
+                    "file_path": str(padded_md),
+                    "table_index": 0,
+                    "version": v,
+                    "new_content": "| A | B |\n| --- | --- |\n| x | y |",
+                },
+            )
+        content = padded_md.read_text()
+        assert "| A | B |" in content
+        assert "| A    " not in content
